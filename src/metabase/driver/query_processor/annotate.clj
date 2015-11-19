@@ -5,6 +5,7 @@
             [clojure.tools.logging :as log]
             [medley.core :as m]
             [metabase.db :refer [sel]]
+            [metabase.driver.interface :refer [*disable-qp-logging*]]
             [metabase.driver.query-processor.interface :as i]
             (metabase.models [field :refer [Field], :as field]
                              [foreign-key :refer [ForeignKey]])
@@ -167,7 +168,7 @@
   "Sort FIELDS by their \"importance\" vectors."
   [query fields]
   (let [field-importance (field-importance-fn query)]
-    (when-not @(resolve 'metabase.driver.query-processor/*disable-qp-logging*)
+    (when-not *disable-qp-logging*
       (log/debug (u/format-color 'yellow "Sorted fields:\n%s" (u/pprint-to-str (sort (map field-importance fields))))))
     (sort-by field-importance fields)))
 

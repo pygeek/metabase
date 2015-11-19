@@ -7,6 +7,12 @@
             [expectations :refer :all]
             [metabase.db :refer :all]
             [metabase.driver :as driver]
+            (metabase.driver [h2 :refer [map->H2Driver]]
+                             [mongo :refer [map->MongoDriver]]
+                             [mysql :refer [map->MySQLDriver]]
+                             [postgres :refer [map->PostgresDriver]]
+                             [sqlite :refer [map->SQLiteDriver]]
+                             [sqlserver :refer [map->SQLServerDriver]])
             (metabase.models [field :refer [Field]]
                              [table :refer [Table]])
             (metabase.test.data [dataset-definitions :as defs]
@@ -17,21 +23,17 @@
                                 [sqlite :as sqlite]
                                 [sqlserver :as sqlserver])
             [metabase.util :as u])
-  (:import metabase.test.data.h2.H2DatasetLoader
-           metabase.test.data.mongo.MongoDatasetLoader
-           metabase.test.data.mysql.MySQLDatasetLoader
-           metabase.test.data.postgres.PostgresDatasetLoader
-           metabase.test.data.sqlite.SQLiteDatasetLoader
-           metabase.test.data.sqlserver.SQLServerDatasetLoader))
+  (:import metabase.driver.h2.H2Driver
+           metabase.driver.mongo.MongoDriver
+           metabase.driver.mysql.MySQLDriver
+           metabase.driver.postgres.PostgresDriver
+           metabase.driver.sqlite.SQLiteDriver
+           metabase.driver.sqlserver.SQLServerDriver))
 
 ;; # IDataset
 
 (defprotocol IDataset
   "Functions needed to fetch test data for various drivers."
-  (load-data! [this]
-    "Load the test data for this dataset.")
-  (db [this]
-    "Return `Database` containing test data for this driver.")
   (default-schema [this]
     "Return the default schema name that tables for this DB should be expected to have.")
   (format-name [this table-or-field-name]
@@ -44,24 +46,29 @@
   (timestamp-field-type [this]
     "Return the `base_type` of a `TIMESTAMP` `Field` like `users.last_login`."))
 
+(defn load-data!
+  "Load the `test-data` dataset for this driver."
+  [{:keys [dbpromise], :as driver}]
+  (when-not (realized? dbpromise)
+    (deliver dbpromise (@(resolve 'metabase.test.data/get-or-create-database!) driver defs/test-data)))
+  @dbpromise)
+
+(defn db
+  "Return the `test-data` `Database` for this driver."
+  ;; TODO - At this point in time this doesn't do anything different from `load-data!`, so we should de-duplicate these functions
+  [driver]
+  (load-data! driver))
 
 ;; # Implementations
 
-(defn- generic-load-data! [{:keys [dbpromise], :as this}]
-  (when-not (realized? dbpromise)
-    (deliver dbpromise (@(resolve 'metabase.test.data/get-or-create-database!) this defs/test-data)))
-  @dbpromise)
-
 (def ^:private IDatasetDefaultsMixin
-  {:load-data!     generic-load-data!
-   :db             generic-load-data!
-   :id-field-type  (constantly :IntegerField)
+  {:id-field-type  (constantly :IntegerField)
    :sum-field-type (constantly :IntegerField)
    :default-schema (constantly nil)})
 
 ;; ## Mongo
 
-(extend MongoDatasetLoader
+(extend MongoDriver
   IDataset
   (merge IDatasetDefaultsMixin
          {:format-name          (fn [_ table-or-field-name]
@@ -81,7 +88,7 @@
 
 ;;; ### H2
 
-(extend H2DatasetLoader
+(extend H2Driver
   IDataset
   (merge GenericSQLIDatasetMixin
          {:default-schema (constantly "PUBLIC")
@@ -93,7 +100,7 @@
 
 ;;; ### Postgres
 
-(extend PostgresDatasetLoader
+(extend PostgresDriver
   IDataset
   (merge GenericSQLIDatasetMixin
          {:default-schema (constantly "public")}))
@@ -101,7 +108,7 @@
 
 ;;; ### MySQL
 
-(extend MySQLDatasetLoader
+(extend MySQLDriver
   IDataset
   (merge GenericSQLIDatasetMixin
          {:sum-field-type (constantly :BigIntegerField)}))
@@ -109,14 +116,14 @@
 
 ;;; ### SQLite
 
-(extend SQLiteDatasetLoader
+(extend SQLiteDriver
   IDataset
   GenericSQLIDatasetMixin)
 
 
 ;;; ### SQLServer
 
-(extend SQLServerDatasetLoader
+(extend SQLServerDriver
   IDataset
   (merge GenericSQLIDatasetMixin
          {:default-schema (constantly "dbo")
@@ -127,12 +134,12 @@
 
 (def ^:private engine->loader*
   "Map of dataset keyword name -> dataset instance (i.e., an object that implements `IDataset`)."
-  {:mongo     (MongoDatasetLoader.     (promise))
-   :h2        (H2DatasetLoader.        (promise))
-   :postgres  (PostgresDatasetLoader.  (promise))
-   :mysql     (MySQLDatasetLoader.     (promise))
-   :sqlite    (SQLiteDatasetLoader.    (promise))
-   :sqlserver (SQLServerDatasetLoader. (promise))})
+  {:h2        (map->H2Driver        {:dbpromise (promise)})
+   :mongo     (map->MongoDriver     {:dbpromise (promise)})
+   :mysql     (map->MySQLDriver     {:dbpromise (promise)})
+   :postgres  (map->PostgresDriver  {:dbpromise (promise)})
+   :sqlite    (map->SQLiteDriver    {:dbpromise (promise)})
+   :sqlserver (map->SQLServerDriver {:dbpromise (promise)})})
 
 (def ^:const all-valid-engines
   "Set of names of all valid datasets."

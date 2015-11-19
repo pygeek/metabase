@@ -10,9 +10,12 @@
                        [utils :as utils])
             [metabase.config :as config]
             [metabase.driver :as driver]
-            (metabase.driver.generic-sql [native :as native]
-                                         [util :refer :all])
-            [metabase.driver.query-processor :as qp]
+            (metabase.driver [interface :as i]
+                             [query-processor :as qp])
+            (metabase.driver.sql [interface :as sql]
+                                 [native :refer [process-native]]
+                                 [util :refer [korma-entity]])
+            [metabase.models.database :refer [Database]]
             [metabase.util :as u])
   (:import java.sql.Timestamp
            java.util.Date
@@ -22,6 +25,13 @@
                                                       OrderByAggregateField
                                                       RelativeDateTimeValue
                                                       Value)))
+
+;;; # NATIVE QUERY PROCESSOR
+
+
+
+
+;;; # STRUCTURED QUERY PROCESSOR
 
 (def ^:private ^:dynamic *query* nil)
 
@@ -188,7 +198,7 @@
 (defn- log-korma-form
   [korma-form]
   (when (config/config-bool :mb-db-logging)
-    (when-not qp/*disable-qp-logging*
+    (when-not i/*disable-qp-logging*
       (log/debug
        (u/format-color 'green "\nKORMA FORM: 😋\n%s" (u/pprint-to-str (dissoc korma-form :db :ent :from :options :aliases :results :type :alias))))
       (try
@@ -264,5 +274,5 @@
   "Process and run a query and return results."
   [{:keys [type] :as query}]
   (case (keyword type)
-    :native (native/process-and-run query)
+    :native (process-native query)
     :query  (process-structured query)))

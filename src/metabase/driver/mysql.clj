@@ -6,9 +6,11 @@
                    mysql)
             (korma.sql [engine :refer [sql-func]]
                        [utils :as utils])
-            [metabase.driver :as driver, :refer [defdriver]]
-            [metabase.driver.generic-sql :refer [sql-driver]]
-            [metabase.driver.generic-sql.util :refer [funcs]]
+            [metabase.driver :as driver]
+            (metabase.driver [generic-sql :as sql]
+                             [interface :refer [connection-error-messages IDriver]])
+            (metabase.driver.sql [interface :refer [ISQLDriver]]
+                                 [util :as sqlutil])
             [metabase.util :as u]))
 
 ;;; # Korma 0.4.2 Bug Workaround
@@ -59,7 +61,7 @@
    :VARCHAR    :TextField
    :YEAR       :IntegerField})
 
-(defn- connection-details->spec [details]
+(defn- connection-details->spec [_ details]
   (-> details
       (set/rename-keys {:dbname :db})
       kdb/mysql
@@ -67,7 +69,7 @@
       ;; Add a param to the end of the connection string that tells MySQL to convert 0000-00-00 dates to NULL when returning them.
       (update :subname (u/rpartial str "?zeroDateTimeBehavior=convertToNull"))))
 
-(defn- unix-timestamp->timestamp [field-or-value seconds-or-milliseconds]
+(defn- unix-timestamp->timestamp [_ field-or-value seconds-or-milliseconds]
   (utils/func (case seconds-or-milliseconds
                 :seconds      "FROM_UNIXTIME(%s)"
                 :milliseconds "FROM_UNIXTIME(%s / 1000)")
@@ -82,14 +84,14 @@
 ;; Truncating to a quarter is trickier since there aren't any format strings.
 ;; See the explanation in the H2 driver, which does the same thing but with slightly different syntax.
 (defn- trunc-to-quarter [field-or-value]
-  (funcs "STR_TO_DATE(%s, '%%Y-%%m-%%d')"
-         ["CONCAT(%s)"
-          ["YEAR(%s)" field-or-value]
-          (k/raw "'-'")
-          ["((QUARTER(%s) * 3) - 2)" field-or-value]
-          (k/raw "'-01'")]))
+  (sqlutil/funcs "STR_TO_DATE(%s, '%%Y-%%m-%%d')"
+                 ["CONCAT(%s)"
+                  ["YEAR(%s)" field-or-value]
+                  (k/raw "'-'")
+                  ["((QUARTER(%s) * 3) - 2)" field-or-value]
+                  (k/raw "'-01'")]))
 
-(defn- date [unit field-or-value]
+(defn- date [_ unit field-or-value]
   (if (= unit :quarter)
     (trunc-to-quarter field-or-value)
     (utils/func (case unit
@@ -113,57 +115,67 @@
                   :year            "YEAR(%s)")
                 [field-or-value])))
 
-(defn- date-interval [unit amount]
+(defn- date-interval [_ unit amount]
   (utils/generated (format "DATE_ADD(NOW(), INTERVAL %d %s)" amount (s/upper-case (name unit)))))
 
-(defn- humanize-connection-error-message [message]
+(defn- humanize-connection-error-message [_ message]
   (condp re-matches message
         #"^Communications link failure\s+The last packet sent successfully to the server was 0 milliseconds ago. The driver has not received any packets from the server.$"
-        (driver/connection-error-messages :cannot-connect-check-host-and-port)
+        (connection-error-messages :cannot-connect-check-host-and-port)
 
         #"^Unknown database .*$"
-        (driver/connection-error-messages :database-name-incorrect)
+        (connection-error-messages :database-name-incorrect)
 
         #"Access denied for user.*$"
-        (driver/connection-error-messages :username-or-password-incorrect)
+        (connection-error-messages :username-or-password-incorrect)
 
         #"Must specify port after ':' in connection string"
-        (driver/connection-error-messages :invalid-hostname)
+        (connection-error-messages :invalid-hostname)
 
         #".*" ; default
         message))
 
-(defdriver mysql
-  (sql-driver
-   {:driver-name                       "MySQL"
-    :details-fields                    [{:name         "host"
-                                         :display-name "Host"
-                                         :default      "localhost"}
-                                        {:name         "port"
-                                         :display-name "Port"
-                                         :type         :integer
-                                         :default      3306}
-                                        {:name         "dbname"
-                                         :display-name "Database name"
-                                         :placeholder  "birds_of_the_word"
-                                         :required     true}
-                                        {:name         "user"
-                                         :display-name "Database username"
-                                         :placeholder  "What username do you use to login to the database?"
-                                         :required     true}
-                                        {:name         "password"
-                                         :display-name "Database password"
-                                         :type         :password
-                                         :placeholder  "*******"}]
-    :column->base-type                 column->base-type
-    :string-length-fn                  :CHAR_LENGTH
-    :excluded-schemas                  #{"INFORMATION_SCHEMA"}
-    :connection-details->spec          connection-details->spec
-    :unix-timestamp->timestamp         unix-timestamp->timestamp
-    :date                              date
-    :date-interval                     date-interval
-    ;; If this fails you need to load the timezone definitions from your system into MySQL;
-    ;; run the command `mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -u root mysql`
-    ;; See https://dev.mysql.com/doc/refman/5.7/en/time-zone-support.html for details
-    :set-timezone-sql                  "SET @@session.time_zone = ?;"
-    :humanize-connection-error-message humanize-connection-error-message}))
+(defrecord MySQLDriver []
+  clojure.lang.Named
+  (getNamespace [_] "metabase.driver.mysql")
+  (getName [_]      "MySQL"))
+
+(extend MySQLDriver
+  ISQLDriver
+  (merge sql/ISQLDriverDefaultsMixin
+         {:column->base-type         (fn [_ column-type]
+                                       (column->base-type column-type))
+          :connection-details->spec  connection-details->spec
+          :date                      date
+          :date-interval             date-interval
+          ;; If this fails you need to load the timezone definitions from your system into MySQL;
+          ;; run the command `mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -u root mysql`
+          ;; See https://dev.mysql.com/doc/refman/5.7/en/time-zone-support.html for details
+          :set-timezone-sql          (constantly "SET @@session.time_zone = ?;")
+          :string-length-fn          (constantly :CHAR_LENGTH)
+          :unix-timestamp->timestamp unix-timestamp->timestamp})
+  IDriver
+  (merge sql/IDriverSQLDefaultsMixin
+         {:details-fields                    (constantly [{:name         "host"
+                                                           :display-name "Host"
+                                                           :default      "localhost"}
+                                                          {:name         "port"
+                                                           :display-name "Port"
+                                                           :type         :integer
+                                                           :default      3306}
+                                                          {:name         "dbname"
+                                                           :display-name "Database name"
+                                                           :placeholder  "birds_of_the_word"
+                                                           :required     true}
+                                                          {:name         "user"
+                                                           :display-name "Database username"
+                                                           :placeholder  "What username do you use to login to the database?"
+                                                           :required     true}
+                                                          {:name         "password"
+                                                           :display-name "Database password"
+                                                           :type         :password
+                                                           :placeholder  "*******"}])
+          :excluded-schemas                  (constantly #{"INFORMATION_SCHEMA"})
+          :humanize-connection-error-message humanize-connection-error-message}))
+
+(driver/register-driver! :mysql (MySQLDriver.))

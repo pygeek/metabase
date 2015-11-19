@@ -5,8 +5,10 @@
                    [db :as kdb])
             [korma.sql.utils :as kutils]
             (metabase [config :as config]
-                      [driver :refer [defdriver]])
-            [metabase.driver.generic-sql :refer [sql-driver]]
+                      [driver :as driver])
+            (metabase.driver [generic-sql :as sql]
+                             [interface :refer [IDriver]])
+            [metabase.driver.sql.interface :refer [ISQLDriver]]
             [metabase.util :as u]))
 
 ;; We'll do regex pattern matching here for determining Field types
@@ -29,7 +31,7 @@
    [#"DATETIME" :DateTimeField]
    [#"DATE"     :DateField]])
 
-(defn- column->base-type [column-type]
+(defn- column->base-type [_ column-type]
   (let [column-type (name column-type)]
     (loop [[[pattern base-type] & more] pattern->type]
       (cond
@@ -51,7 +53,7 @@
 (defn- date
   "Apply truncation / extraction to a date field or value for SQLite.
    See also the [SQLite Date and Time Functions Reference](http://www.sqlite.org/lang_datefunc.html)."
-  [unit field-or-value]
+  [_ unit field-or-value]
   ;; Convert Timestamps to ISO 8601 strings before passing to SQLite, otherwise they don't seem to work correctly
   (let [v (if (instance? java.sql.Timestamp field-or-value)
             (literal (u/date->iso-8601 field-or-value))
@@ -88,7 +90,7 @@
                                     [(strftime "%m" v)])
       :year            (->integer (strftime "%Y" v)))))
 
-(defn- date-interval [unit amount]
+(defn- date-interval [_ unit amount]
   (let [[multiplier unit] (case unit
                             :second  [1 "seconds"]
                             :minute  [1 "minutes"]
@@ -101,27 +103,41 @@
     ;; Make a string like DATE('now', '+7 days')
     (k/raw (format "DATETIME('now', '%+d %s')" (* amount multiplier) unit))))
 
-(defn- unix-timestamp->timestamp [field-or-value seconds-or-milliseconds]
+(defn- unix-timestamp->timestamp [_ field-or-value seconds-or-milliseconds]
   (kutils/func (case seconds-or-milliseconds
                  :seconds      "DATETIME(%s, 'unixepoch')"
                  :milliseconds "DATETIME(%s / 1000, 'unixepoch')")
                [field-or-value]))
 
-(defdriver sqlite
-  (cond-> (-> (sql-driver {:driver-name               "SQLite"
-                           :details-fields            [{:name         "db"
-                                                        :display-name "Filename"
-                                                        :placeholder  "/home/camsaul/toucan_sightings.sqlite 😋"
-                                                        :required     true}]
-                           :column->base-type         column->base-type
-                           :string-length-fn          :LENGTH
-                           :current-datetime-fn       (k/raw "DATETIME('now')")
-                           :connection-details->spec  kdb/sqlite3
-                           :date                      date
-                           :date-interval             date-interval
-                           :unix-timestamp->timestamp unix-timestamp->timestamp})
-              ;; SQLite doesn't have a standard deviation function
-              (update :features set/difference #{:standard-deviation-aggregations}))
-    ;; HACK SQLite doesn't support ALTER TABLE ADD CONSTRAINT FOREIGN KEY and I don't have all day to work around this
-    ;; so for now we'll just skip the foreign key stuff in the tests.
-    (config/is-test?) (update :features set/difference #{:foreign-keys})))
+(defrecord SQLiteDriver []
+  clojure.lang.Named
+  (getNamespace [_] "metabase.driver.sqlite")
+  (getName [_]      "SQLite"))
+
+(extend SQLiteDriver
+  ISQLDriver
+  (merge sql/ISQLDriverDefaultsMixin
+         {:column->base-type         column->base-type
+          :connection-details->spec  (fn [_ details]
+                                       (kdb/sqlite3 details))
+          :current-datetime-fn       (constantly (k/raw "DATETIME('now')"))
+          :date                      date
+          :date-interval             date-interval
+          :string-length-fn          (constantly :LENGTH)
+          :unix-timestamp->timestamp unix-timestamp->timestamp})
+  IDriver
+  (merge sql/IDriverSQLDefaultsMixin
+         {:details-fields (constantly [{:name         "db"
+                                        :display-name "Filename"
+                                        :placeholder  "/home/camsaul/toucan_sightings.sqlite 😋"
+                                        :required     true}])
+          :features       (fn [this]
+                            (set/difference (sql/features this)
+                                            ;; SQLite doesn't have a standard deviation function
+                                            #{:standard-deviation-aggregations}
+                                            ;; HACK SQLite doesn't support ALTER TABLE ADD CONSTRAINT FOREIGN KEY and I don't have all
+                                            ;; day to work around this so for now we'll just skip the foreign key stuff in the tests.
+                                            (when (config/is-test?)
+                                              #{:foreign-keys})))}))
+
+(driver/register-driver! :sqlite (SQLiteDriver.))

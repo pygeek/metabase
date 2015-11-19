@@ -8,6 +8,7 @@
             [medley.core :as m]
             [swiss.arrows :refer [<<-]]
             [metabase.db :refer :all]
+            [metabase.driver.interface :as i]
             (metabase.driver.query-processor [annotate :as annotate]
                                              [expand :as expand]
                                              [interface :refer :all]
@@ -15,24 +16,6 @@
             (metabase.models [field :refer [Field], :as field]
                              [foreign-key :refer [ForeignKey]])
             [metabase.util :as u]))
-
-;; # CONSTANTS
-
-(def ^:const max-result-rows
-  "Maximum number of rows the QP should ever return."
-  10000)
-
-(def ^:const max-result-bare-rows
-  "Maximum number of rows the QP should ever return specifically for `rows` type aggregations."
-  2000)
-
-
-;; # DYNAMIC VARS
-
-(def ^:dynamic *disable-qp-logging*
-  "Should we disable logging for the QP? (e.g., during sync we probably want to turn it off to keep logs less cluttered)."
-  false)
-
 
 ;; +----------------------------------------------------------------------------------------------------+
 ;; |                                     QP INTERNAL IMPLEMENTATION                                     |
@@ -77,7 +60,7 @@
                :status    :completed
                :data      results}
         ;; Add :rows_truncated if we've hit the limit so the UI can let the user know
-        (= num-results max-result-rows) (assoc-in [:data :rows_truncated] max-result-rows)))))
+        (= num-results i/max-result-rows) (assoc-in [:data :rows_truncated] i/max-result-rows)))))
 
 (defn- should-add-implicit-fields? [{{:keys [fields breakout], {ag-type :aggregation-type} :aggregation} :query}]
   (and (or (not ag-type)
@@ -204,15 +187,15 @@
                     (and (not limit)
                          (not page)
                          (or (not ag-type)
-                             (= ag-type :rows))) (assoc-in [:query :limit] max-result-bare-rows))
+                             (= ag-type :rows))) (assoc-in [:query :limit] i/max-result-bare-rows))
           results (qp query)]
-      (update results :rows (partial take max-result-rows)))))
+      (update results :rows (partial take i/max-result-rows)))))
 
 
 (defn- pre-log-query [qp]
   (fn [query]
     (when (and (structured-query? query)
-               (not *disable-qp-logging*))
+               (not i/*disable-qp-logging*))
       (log/debug (u/format-color 'magenta "\n\nPREPROCESSED/EXPANDED: 😻\n%s"
                                  (u/pprint-to-str
                                   ;; Remove empty kv pairs because otherwise expanded query is HUGE
@@ -272,7 +255,7 @@
 (defn process
   "Process a QUERY and return the results."
   [driver query]
-  (when-not *disable-qp-logging*
+  (when-not i/*disable-qp-logging*
     (log/debug (u/format-color 'blue "\nQUERY: 😎\n%s" (u/pprint-to-str query))))
   (let [driver-process-query      (:process-query driver)
         driver-wrap-process-query (or (:process-query-in-context driver)

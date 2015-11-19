@@ -81,13 +81,20 @@
   {:expectations-options :before-run}
   []
   ;; We can shave about a second from unit test launch time by doing the various setup stages in on different threads
-  (let [setup-db (future (time (do (log/info "Setting up test DB and running migrations...")
-                                   (db/setup-db :auto-migrate true)
-                                   (load-test-data!)
-                                   (metabase.models.setting/set :site-name "Metabase Test")
-                                   (core/initialization-complete!))))]
-    (core/start-jetty)
-    @setup-db))
+  ;; Start Jetty on the background thread because it's unlikely to barf, and if DB setup barfs it's hard to debug on a BG thread
+  (let [start-jetty (future (core/start-jetty))]
+
+    (try (log/info "Setting up test DB and running migrations...")
+         (db/setup-db :auto-migrate true)
+         (load-test-data!)
+         (metabase.models.setting/set :site-name "Metabase Test")
+         (core/initialization-complete!)
+         ;; If test setup fails exit right away
+         (catch Throwable e
+           (log/error (u/format-color 'red "Test Setup failed: %s\n%s" e (u/pprint-to-str (.getStackTrace e))))
+           (System/exit -1)))
+
+    @start-jetty))
 
 
 (defn test-teardown

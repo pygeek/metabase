@@ -13,7 +13,7 @@
                     [query :refer :all])
             (metabase [config :as config]
                       [db :refer :all])
-            [metabase.driver.query-processor :as qp]
+            [metabase.driver.interface :as i]
             (metabase.driver.query-processor [annotate :as annotate]
                                              [interface :refer [qualified-name-components map->DateTimeField map->DateTimeValue]])
             [metabase.driver.mongo.util :refer [with-mongo-connection *mongo-connection* values->base-type]]
@@ -43,7 +43,7 @@
 (def ^:dynamic ^:private *query* nil)
 
 (defn- log-monger-form [form]
-  (when-not qp/*disable-qp-logging*
+  (when-not i/*disable-qp-logging*
     (log/debug (u/format-color 'blue "\nMONGO AGGREGATION PIPELINE:\n%s\n"
                  (->> form
                       (walk/postwalk #(if (symbol? %) (symbol (name %)) %)) ; strip namespace qualifiers from Monger form

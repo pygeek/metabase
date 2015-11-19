@@ -6,7 +6,8 @@
             [korma.core :as k]
             [metabase.db :refer :all]
             [metabase.driver :as driver]
-            [metabase.driver.query-processor :refer :all]
+            (metabase.driver [interface :as i]
+                             [query-processor :refer :all])
             (metabase.models [field :refer [Field]]
                              [table :refer [Table]])
             (metabase.test.data [dataset-definitions :as defs]
@@ -487,14 +488,12 @@
      limit 10))
 
 
-
-
 ;; # POST PROCESSING TESTS
 
 ;; ## LIMIT-MAX-RESULT-ROWS
 ;; Apply limit-max-result-rows to an infinite sequence and make sure it gets capped at `max-result-rows`
-(expect max-result-rows
-  (->> (((u/runtime-resolved-fn 'metabase.driver.query-processor 'limit) identity) {:rows (repeat [:ok])})
+(expect i/max-result-rows
+  (->> ((@(resolve 'metabase.driver.query-processor/limit) identity) {:rows (repeat [:ok])})
        :rows
        count))
 

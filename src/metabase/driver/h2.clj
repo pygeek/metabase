@@ -3,9 +3,11 @@
             [korma.db :as kdb]
             [korma.sql.utils :as utils]
             [metabase.db :as db]
-            [metabase.driver :as driver, :refer [defdriver]]
-            [metabase.driver.generic-sql :refer [sql-driver]]
-            [metabase.driver.generic-sql.util :refer [funcs]]
+            [metabase.driver :as driver]
+            (metabase.driver [generic-sql :as sql]
+                             [interface :refer [connection-error-messages IDriver]])
+            (metabase.driver.sql [interface :refer [ISQLDriver]]
+                                 [util :refer [funcs]])
             [metabase.models.database :refer [Database]]))
 
 (def ^:private ^:const column->base-type
@@ -101,17 +103,17 @@
     (file+options->connection-string file (merge options {"IFEXISTS"         "TRUE"
                                                           "ACCESS_MODE_DATA" "r"}))))
 
-(defn- connection-details->spec [details]
+(defn- connection-details->spec [_ details]
   (kdb/h2 (if db/*allow-potentailly-unsafe-connections* details
               (update details :db connection-string-set-safe-options))))
 
-(defn- unix-timestamp->timestamp [field-or-value seconds-or-milliseconds]
+(defn- unix-timestamp->timestamp [_ field-or-value seconds-or-milliseconds]
   (utils/func (format "TIMESTAMPADD('%s', %%s, TIMESTAMP '1970-01-01T00:00:00Z')" (case seconds-or-milliseconds
                                                                                     :seconds      "SECOND"
                                                                                     :milliseconds "MILLISECOND"))
               [field-or-value]))
 
-(defn- process-query-in-context [qp]
+(defn- process-query-in-context [_ qp]
   (fn [{query-type :type, :as query}]
     {:pre [query-type]}
     ;; For :native queries check to make sure the DB in question has a (non-default) NAME property specified in the connection string.
@@ -147,7 +149,7 @@
           ["YEAR(%s)" field-or-value]
           ["((QUARTER(%s) * 3) - 2)" field-or-value]]))
 
-(defn- date [unit field-or-value]
+(defn- date [_ unit field-or-value]
   (if (= unit :quarter)
     (trunc-to-quarter field-or-value)
     (utils/func (case unit
@@ -169,36 +171,47 @@
                 [field-or-value])))
 
 ;; TODO - maybe rename this relative-date ?
-(defn- date-interval [unit amount]
+(defn- date-interval [_ unit amount]
   (utils/generated (if (= unit :quarter)
                      (format "DATEADD('MONTH', (%d * 3), NOW())" amount)
                      (format "DATEADD('%s', %d, NOW())" (s/upper-case (name unit)) amount))))
 
-(defn- humanize-connection-error-message [message]
+(defn- humanize-connection-error-message [_ message]
   (condp re-matches message
     #"^A file path that is implicitly relative to the current working directory is not allowed in the database URL .*$"
-    (driver/connection-error-messages :cannot-connect-check-host-and-port)
+    (connection-error-messages :cannot-connect-check-host-and-port)
 
     #"^Database .* not found .*$"
-    (driver/connection-error-messages :cannot-connect-check-host-and-port)
+    (connection-error-messages :cannot-connect-check-host-and-port)
 
     #"^Wrong user name or password .*$"
-    (driver/connection-error-messages :username-or-password-incorrect)
+    (connection-error-messages :username-or-password-incorrect)
 
     #".*" ; default
     message))
 
-(defdriver h2
-  (sql-driver {:driver-name                       "H2"
-               :details-fields                    [{:name         "db"
-                                                    :display-name "Connection String"
-                                                    :placeholder  "file:/Users/camsaul/bird_sightings/toucans;AUTO_SERVER=TRUE"
-                                                    :required     true}]
-               :column->base-type                 column->base-type
-               :string-length-fn                  :LENGTH
-               :connection-details->spec          connection-details->spec
-               :date                              date
-               :date-interval                     date-interval
-               :unix-timestamp->timestamp         unix-timestamp->timestamp
-               :humanize-connection-error-message humanize-connection-error-message
-               :process-query-in-context          process-query-in-context}))
+(defrecord H2Driver []
+  clojure.lang.Named
+  (getNamespace [_] "metabase.driver.h2")
+  (getName [_]      "H2"))
+
+(extend H2Driver
+  ISQLDriver
+  (merge sql/ISQLDriverDefaultsMixin
+         {:column->base-type         (fn [_ column-type]
+                                       (column->base-type column-type))
+          :connection-details->spec  connection-details->spec
+          :date                      date
+          :date-interval             date-interval
+          :string-length-fn          (constantly :LENGTH)
+          :unix-timestamp->timestamp unix-timestamp->timestamp})
+  IDriver
+  (merge sql/IDriverSQLDefaultsMixin
+         {:details-fields                    (constantly [{:name         "db"
+                                                           :display-name "Connection String"
+                                                           :placeholder  "file:/Users/camsaul/bird_sightings/toucans;AUTO_SERVER=TRUE"
+                                                           :required     true}])
+          :humanize-connection-error-message humanize-connection-error-message
+          :process-query-in-context          process-query-in-context}))
+
+(driver/register-driver! :h2 (H2Driver.))

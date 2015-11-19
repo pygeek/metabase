@@ -1,19 +1,17 @@
-(ns metabase.driver.generic-sql.util
-  "Shared functions for our generic-sql query processor."
+(ns metabase.driver.sql.util
   (:require [clojure.java.jdbc :as jdbc]
             [clojure.tools.logging :as log]
             [colorize.core :as color]
-            (korma [core :as korma]
-                   [db :as kdb])
-            [korma.sql.utils :as utils]
+            [korma.db :as kdb]
+            [korma.sql.utils :as kutils]
             [metabase.driver :as driver]
-            [metabase.driver.query-processor :as qp]))
+            [metabase.driver.sql.interface :as sql]))
 
 (defn- db->connection-spec
   "Return a JDBC connection spec for a Metabase `Database`."
   [{{:keys [short-lived?]} :details, :as database}]
-  (let [{:keys [connection-details->spec]} (driver/engine->driver (:engine database))]
-    (assoc (connection-details->spec (:details database))
+  (let [driver (driver/engine->driver (:engine database))]
+    (assoc (sql/connection-details->spec driver (:details database))
            ;; unless this is a temp DB, we need to make a pool or the connection will be closed before we get a chance to unCLOB-er the results during JSON serialization
            ;; TODO - what will we do once we have CLOBS in temp DBs?
            :make-pool? (not short-lived?))))
@@ -85,15 +83,15 @@
     :db    (db->korma-db db)}))
 
 (defn funcs
-  "Convenience for writing nested `utils/func` forms.
-   The first argument is treated the same as with `utils/func`;
+  "Convenience for writing nested `kutils/func` forms.
+   The first argument is treated the same as with `kutils/func`;
    But when any arg is a vector we'll treat it as a recursive call to `funcs`.
 
      (funcs \"CONCAT(%s)\" [\"YEAR(%s)\" x] y [\"MONTH(%s)\" z])
-       -> (utils/func \"CONCAT(%s)\" [(utils/func \"YEAR(%s)\" [x])
+       -> (kutils/func \"CONCAT(%s)\" [(kutils/func \"YEAR(%s)\" [x])
                                       y
-                                      (utils/func \"MONTH(%s)\" [z])])"
+                                      (kutils/func \"MONTH(%s)\" [z])])"
   [fn-format-str & args]
-  (utils/func fn-format-str (vec (for [arg args]
-                                   (if (vector? arg) (apply funcs arg)
-                                       arg)))))
+  (kutils/func fn-format-str (vec (for [arg args]
+                                    (if (vector? arg) (apply funcs arg)
+                                        arg)))))
